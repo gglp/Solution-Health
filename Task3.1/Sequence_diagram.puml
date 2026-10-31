@@ -1,0 +1,112 @@
+@startuml
+!theme plain
+skinparam shadowing false
+skinparam defaultFontSize 12
+skinparam sequenceMessageAlign center
+skinparam responseMessageBelowArrow true
+<style>
+sequenceDiagram {
+  participant {
+    Padding 8
+  }
+  box {
+    Padding 6
+  }
+}
+</style>
+skinparam NoteBackgroundColor #FFFDE7
+skinparam SequenceGroupBodyBackGroundColor transparent
+
+title Поток данных: от готовности результата в LIS до появления в мобильном приложении
+
+participant "LIS" as LIS #EFEBE9
+box "Сервис результатов анализов" #E8F5E9
+  participant "Модуль опроса" as Poller
+  database "Витрина\n(PostgreSQL)" as DB
+  participant "Debezium Outbox\nEvent Router" as CDC
+  participant "API результатов" as ResAPI
+end box
+queue "Брокер событий\n(Kafka)" as Kafka
+participant "CRM" as CRM
+participant "Уведомления" as Notif
+participant "Провайдеры пуш\n(FCM, APNs)" as Push
+participant "API Gateway\nи BFF" as Edge
+actor "Мобильное\nприложение" as App
+
+== Готовность результата ==
+LIS -> LIS : Лаборант подтверждает результат,\nстатус «готов», отметка времени изменения
+LIS -->> Poller : Сигнал о готовности (REST, необязательный)
+note right of Poller
+  Сигнал запускает внеочередной опрос.
+  Без сигнала опрос выполняется
+  по расписанию раз в 15–30 с.
+end note
+
+== Получение результата из LIS ==
+Poller -> LIS : Результаты, изменённые после отметки\n(окно с перекрытием)
+alt LIS недоступна
+  LIS --x Poller : Ошибка или тайм-аут
+  Poller -> Poller : Повтор с нарастающей задержкой;\nотметка опроса не сдвигается
+  note right of Poller : Оповещение в Сервис мониторинга\nпри недоступности более 5 мин
+else LIS отвечает
+  LIS --> Poller : Список результатов
+  loop Для каждого результата
+    Poller -> Poller : Проверка формата и полноты
+    alt Данные некорректны
+      Poller -> DB : Статус «требует разбора»\n(консоль доставки)
+    else Версия уже есть в витрине
+      Poller -> Poller : Пропуск дубля
+    else Новый результат или новая версия
+      group Одна транзакция
+        Poller -> DB : Запись результата\n(ключ: идентификатор + версия)
+        Poller -> DB : Событие «Результат анализа готов»\nв исходящую таблицу
+        Poller -> DB : Сдвиг отметки опроса
+      end
+    end
+  end
+end
+
+== Публикация события ==
+CDC -> DB : Чтение журнала транзакций
+CDC -> Kafka : Событие «Результат анализа готов»\n(ключ — идентификатор пациента)
+note over Kafka : Хранение не менее 7 дней,\nповторное чтение после сбоя
+
+== Доставка потребителям ==
+par CRM
+  Kafka -> CRM : Событие
+  alt Событие уже обработано
+    CRM -> CRM : Пропуск дубля
+  else Новое событие
+    CRM -> CRM : Обновление карточки пациента:\nрезультат виден врачу
+  end
+  opt Ошибка после повторов
+    CRM -> Kafka : Топик недоставленных сообщений\n(разбор в консоли доставки)
+  end
+else Уведомления
+  Kafka -> Notif : Событие
+  alt Событие уже обработано
+    Notif -> Notif : Пропуск дубля
+  else Новое событие
+    Notif -> Push : Пуш «Результат анализа готов»\nбез медицинских данных\n(транзакционная очередь)
+    Push -->> App : Пуш-уведомление
+  end
+end
+
+== Получение результата пациентом ==
+App -> Edge : Запрос результата\n(токен доступа)
+Edge -> ResAPI : Запрос результата (gRPC, mTLS)
+ResAPI -> ResAPI : Проверка владельца результата
+ResAPI -> DB : Чтение (кэш или витрина)
+DB --> ResAPI : Результат
+ResAPI --> Edge : Результат
+Edge --> App : Результат на экране пациента
+
+== Ежедневная сверка ==
+Poller -> LIS : Перечень результатов за 48 часов
+LIS --> Poller : Перечень
+Poller -> DB : Сравнение с витриной
+opt Есть расхождения
+  Poller -> Poller : Догрузка недостающих результатов\nпо основному потоку
+  note right of Poller : Оповещение в Сервис мониторинга
+end
+@enduml
