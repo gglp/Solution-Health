@@ -16,7 +16,7 @@ UpdateRelStyle($textColor="#444444", $lineColor="#666666")
 ' ====================== Акторы ======================
 Person(patient, "Пациент", "Записывается на приём, оплачивает услуги, получает результаты анализов и уведомления")
 Person(doctor, "Врач", "Управляет расписанием, просматривает анализы пациентов")
-Person(labTech, "Лаборант", "Просматривает результаты анализов в LIS")
+Person(labTech, "Лаборант", "Подтверждает результаты в LIS, контролирует их доставку пациентам и врачам")
 
 ' ====================== Каналы ======================
 System(mobileApp, "Мобильное приложение", "iOS, Android. Запись, оплата, результаты анализов, полисы ДМС, пуш-уведомления", $tags="new")
@@ -31,7 +31,7 @@ System(bff, "BFF мобильного приложения", "Агрегация
 System(schedule, "Расписание", "Java, REST, PostgreSQL + реплика для чтения. Резерв слота с ограниченным временем жизни, Transactional Outbox")
 System(paymentService, "Платёжный сервис", "Платежи с ключом идемпотентности, статусы, сверка с провайдером, возвраты", $tags="new")
 System(policyService, "Сервис полисов ДМС", "Фасад над 1С (Anti-Corruption Layer): кэш полисов, ограничение нагрузки на 1С", $tags="new")
-System(resultsService, "Сервис результатов анализов", "Опрос LIS, публикация событий, витрина результатов с дедупликацией", $tags="new")
+System(resultsService, "Сервис результатов анализов", "Приём сигналов и инкрементальный опрос LIS, витрина результатов с дедупликацией и кэшем, Transactional Outbox, публикация событий, консоль доставки", $tags="new")
 System(crm, "CRM", "Микросервис на Java, REST. Карточки пациентов, история обращений")
 
 ' ====================== Интеграционная платформа ======================
@@ -71,13 +71,16 @@ Rel(paymentService, paymentGateway, "Сверка платежей", "реест
 Rel(policyService, policies1c, "Синхронизация полисов", "HTTP-шлюз 1С, TLS, пакетно", $tags="batch")
 Rel_D(policyService, policies1c, "Проверка при отсутствии в кэше", "HTTP-шлюз 1С, TLS, с ограничением нагрузки")
 
-Rel_D(resultsService, lis, "Опрос новых результатов", "REST API LIS, TLS")
+Rel_D(resultsService, lis, "Опрос результатов, изменённых после отметки (раз в 15–30 с)", "REST API LIS, TLS")
+Rel_U(lis, resultsService, "Сигнал о готовности результата (внеочередной опрос)", "REST, TLS", $tags="async")
+Rel(resultsService, lis, "Ежедневная сверка за 48 часов", "REST API LIS, TLS", $tags="batch")
+Rel_U(labTech, resultsService, "Статус доставки, повторная публикация результата", "HTTPS, консоль доставки")
 
 ' ====================== Асинхронные взаимодействия ======================
 Rel_D(paymentService, eventBroker, "Платёж проведён / отклонён / возврат", "Kafka, TLS, Outbox", $tags="async")
 Rel_U(eventBroker, schedule, "Подтверждение или освобождение резерва (сага)", "Kafka, TLS", $tags="async")
 Rel_D(schedule, eventBroker, "Запись создана / подтверждена / перенесена / отменена", "Kafka, TLS, Outbox", $tags="async")
-Rel_D(resultsService, eventBroker, "Результат анализа готов", "Kafka, TLS", $tags="async")
+Rel_D(resultsService, eventBroker, "Результат анализа готов (после записи в витрину)", "Kafka, TLS, Outbox", $tags="async")
 Rel_D(crm, eventBroker, "Запуск маркетинговой кампании", "Kafka, TLS", $tags="async")
 Rel_U(eventBroker, crm, "События записей и результатов", "Kafka, TLS", $tags="async")
 Rel_D(eventBroker, notifications, "События для уведомлений", "Kafka, TLS", $tags="async")
@@ -134,7 +137,7 @@ note bottom of policies1c
 end note
 
 ' ====================== Расположение ======================
-Lay_R(mobileApp, webPortal)
+Lay_R(idp, webPortal)
 Lay_R(patient, doctor)
 Lay_R(doctor, labTech)
 Lay_R(schedule, paymentService)
