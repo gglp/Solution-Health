@@ -1,0 +1,147 @@
+@startuml
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Context.puml
+
+LAYOUT_TOP_DOWN()
+
+title Целевая контекстная диаграмма «Здоровье+» (C4 Level 1)
+
+' ====================== Обозначения ======================
+AddElementTag("new", $bgColor="#2E7D32", $borderColor="#1B5E20", $fontColor="#FFFFFF", $legendText="новая система")
+AddElementTag("legacy", $bgColor="#8D6E63", $borderColor="#5D4037", $fontColor="#FFFFFF", $legendText="legacy-система (без изменений)")
+AddRelTag("async", $lineStyle=DashedLine(), $textColor="#1565C0", $lineColor="#1565C0", $legendText="асинхронно: события и сообщения")
+AddRelTag("batch", $lineStyle=DottedLine(), $legendText="пакетный обмен по расписанию")
+AddRelTag("grpc", $textColor="#6A1B9A", $lineColor="#6A1B9A", $lineThickness=2, $legendText="синхронно: gRPC + mTLS")
+UpdateRelStyle($textColor="#444444", $lineColor="#666666")
+
+' ====================== Акторы ======================
+Person(patient, "Пациент", "Записывается на приём, оплачивает услуги, получает результаты анализов и уведомления")
+Person(doctor, "Врач", "Управляет расписанием, просматривает анализы пациентов")
+Person(labTech, "Лаборант", "Просматривает результаты анализов в LIS")
+
+' ====================== Каналы ======================
+System(mobileApp, "Мобильное приложение", "iOS, Android. Запись, оплата, результаты анализов, полисы ДМС, пуш-уведомления", $tags="new")
+System(webPortal, "Веб-портал", "Интерфейс для пациентов, врачей и администраторов")
+
+' ====================== Периметр ======================
+System(idp, "Сервис аутентификации", "OpenID Connect: вход и подтверждение личности пациента, выдача, проверка и отзыв токенов", $tags="new")
+System(apiGateway, "API Gateway", "Проверка токенов, ограничение частоты запросов, ключи идемпотентности, маршрутизация, версионирование API", $tags="new")
+System(bff, "BFF мобильного приложения", "Агрегация данных под экраны, тайм-ауты, повторы, предохранители, кэш справочных данных", $tags="new")
+
+' ====================== Предметные системы ======================
+System(schedule, "Расписание", "Java, REST, PostgreSQL + реплика для чтения. Резерв слота с ограниченным временем жизни, Transactional Outbox")
+System(paymentService, "Платёжный сервис", "Платежи с ключом идемпотентности, статусы, сверка с провайдером, возвраты", $tags="new")
+System(policyService, "Сервис полисов ДМС", "Фасад над 1С (Anti-Corruption Layer): кэш полисов, ограничение нагрузки на 1С", $tags="new")
+System(resultsService, "Сервис результатов анализов", "Опрос LIS, публикация событий, витрина результатов с дедупликацией", $tags="new")
+System(crm, "CRM", "Микросервис на Java, REST. Карточки пациентов, история обращений")
+
+' ====================== Интеграционная платформа ======================
+SystemQueue(eventBroker, "Брокер событий", "Apache Kafka. События записей, платежей, результатов анализов, кампаний", $tags="new")
+System(notifications, "Уведомления", "RabbitMQ: очереди доставки по приоритету, очередь недоставленных сообщений")
+System(observability, "Сервис мониторинга", "OpenTelemetry: метрики, журналы, сквозные трассировки, оповещения", $tags="new")
+
+' ====================== Legacy и внешние системы ======================
+System(policies1c, "1С: Полисы", "1С:Предприятие, HTTP-шлюз", $tags="legacy")
+System(lis, "LIS (Лабораторная)", "SOAP, FTP, REST API", $tags="legacy")
+System_Ext(paymentGateway, "Платёжный шлюз", "Внешний провайдер, REST API, уведомления о статусе (webhook)")
+System_Ext(pushProviders, "Провайдеры уведомлений", "Пуш (FCM, APNs), SMS, электронная почта")
+
+' ====================== Пользователи ======================
+Rel_D(patient, mobileApp, "Записывается, оплачивает, смотрит результаты")
+Rel_D(patient, webPortal, "Записывается на приём", "HTTPS")
+Rel_D(doctor, webPortal, "Управляет расписанием, просматривает анализы", "HTTPS")
+Rel_D(labTech, lis, "Просматривает результаты анализов", "UI / API")
+
+' ====================== Синхронные взаимодействия ======================
+Rel_R(mobileApp, idp, "Вход пациента", "OIDC, Authorization Code + PKCE")
+Rel_D(mobileApp, apiGateway, "Запросы с токеном и ключом идемпотентности", "REST / HTTPS (TLS)")
+Rel_D(webPortal, apiGateway, "Запросы веб-портала", "REST / HTTPS (TLS)")
+Rel_U(apiGateway, idp, "Ключи проверки токенов", "HTTPS, mTLS")
+Rel_D(apiGateway, bff, "Маршрутизация", "REST / HTTPS, mTLS")
+
+Rel_D(bff, schedule, "Свободные слоты, резерв записи", "REST / HTTPS, mTLS")
+Rel_D(bff, paymentService, "Создание платежа", "gRPC, mTLS", $tags="grpc")
+Rel_D(bff, policyService, "Проверка полиса", "gRPC, mTLS", $tags="grpc")
+Rel_D(bff, resultsService, "Результаты анализов", "gRPC, mTLS", $tags="grpc")
+Rel_D(bff, crm, "Профиль пациента", "REST / HTTPS, mTLS")
+
+Rel_D(paymentService, paymentGateway, "Создание платежа", "REST / HTTPS (TLS)")
+Rel_Back(paymentService, paymentGateway, "Статус платежа", "webhook, HTTPS (TLS)", $tags="async")
+Rel(paymentService, paymentGateway, "Сверка платежей", "реестр, ежедневно", $tags="batch")
+
+Rel(policyService, policies1c, "Синхронизация полисов", "HTTP-шлюз 1С, TLS, пакетно", $tags="batch")
+Rel_D(policyService, policies1c, "Проверка при отсутствии в кэше", "HTTP-шлюз 1С, TLS, с ограничением нагрузки")
+
+Rel_D(resultsService, lis, "Опрос новых результатов", "REST API LIS, TLS")
+
+' ====================== Асинхронные взаимодействия ======================
+Rel_D(paymentService, eventBroker, "Платёж проведён / отклонён / возврат", "Kafka, TLS, Outbox", $tags="async")
+Rel_U(eventBroker, schedule, "Подтверждение или освобождение резерва (сага)", "Kafka, TLS", $tags="async")
+Rel_D(schedule, eventBroker, "Запись создана / подтверждена / перенесена / отменена", "Kafka, TLS, Outbox", $tags="async")
+Rel_D(resultsService, eventBroker, "Результат анализа готов", "Kafka, TLS", $tags="async")
+Rel_D(crm, eventBroker, "Запуск маркетинговой кампании", "Kafka, TLS", $tags="async")
+Rel_U(eventBroker, crm, "События записей и результатов", "Kafka, TLS", $tags="async")
+Rel_D(eventBroker, notifications, "События для уведомлений", "Kafka, TLS", $tags="async")
+
+Rel_R(notifications, pushProviders, "Отправка по приоритету", "AMQP → HTTPS", $tags="async")
+Rel_U(pushProviders, mobileApp, "Пуш-уведомления, SMS, электронная почта", "FCM / APNs / SMS / SMTP", $tags="async")
+
+Rel_R(apiGateway, observability, "Метрики, журналы, трассировки всех систем", "OTLP / gRPC, mTLS", $tags="async")
+
+
+' ====================== Обоснование выбора протоколов ======================
+note left of apiGateway
+  Внешний периметр — REST / HTTPS (TLS).
+  Клиенты работают с JSON; REST поддерживают
+  мобильные SDK, прокси и инструменты отладки.
+  Токен, ключ идемпотентности и идентификатор
+  трассировки передаются в заголовках HTTP.
+end note
+
+note left of bff
+  Граница протоколов — BFF.
+  До BFF включительно — REST: BFF отдаёт данные
+  в формате клиента; gRPC сразу после шлюза лишь
+  перенёс бы преобразование JSON ↔ Protobuf в шлюз
+  и усложнил передачу заголовков и кодов ошибок.
+  За BFF к новым сервисам — gRPC: 3–5 вызовов
+  на экран, строгие контракты Protobuf с
+  обратной совместимостью, обе стороны новые.
+  Расписание и CRM — REST: готовый REST API,
+  переписывать его для MVP нецелесообразно.
+end note
+
+note right of bff
+  Все внутренние синхронные вызовы — mTLS
+  через сервисную сетку (Istio или Linkerd):
+  взаимная аутентификация сервисов и шифрование
+  медицинских данных внутри контура без
+  доработки кода сервисов.
+end note
+
+note right of eventBroker
+  Kafka — TLS, аутентификация клиентов
+  и списки доступа к топикам: каждая
+  система публикует и читает только
+  свои события.
+end note
+
+note bottom of policies1c
+  1С, LIS и платёжный шлюз — протокол
+  задаёт поставщик (HTTP-шлюз 1С, REST LIS,
+  REST провайдера). Обязательно TLS, mTLS —
+  при поддержке поставщиком. Изоляция legacy
+  обеспечивается фасадами, а не сменой протокола.
+end note
+
+' ====================== Расположение ======================
+Lay_R(mobileApp, webPortal)
+Lay_R(patient, doctor)
+Lay_R(doctor, labTech)
+Lay_R(schedule, paymentService)
+Lay_R(paymentService, policyService)
+Lay_R(policyService, resultsService)
+Lay_R(resultsService, crm)
+Lay_R(policies1c, lis)
+
+SHOW_LEGEND()
+@enduml
