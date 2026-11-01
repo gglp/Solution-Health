@@ -1,0 +1,62 @@
+@startuml
+!theme plain
+skinparam shadowing false
+skinparam defaultFontSize 12
+skinparam sequenceMessageAlign center
+skinparam responseMessageBelowArrow true
+skinparam NoteBackgroundColor #FFFDE7
+skinparam SequenceGroupBodyBackGroundColor transparent
+
+title Аутентификация пользователя мобильного приложения: нативный экран входа, OAuth 2.0 for First-Party Apps + PKCE
+
+actor "Пациент" as Patient
+participant "Мобильное\nприложение" as App
+participant "Сервис\nаутентификации" as IdP
+participant "Уведомления\n(SMS)" as SMS
+participant "API Gateway" as GW
+participant "BFF и сервисы" as API
+
+== Вход на экране приложения ==
+Patient -> App : Вводит номер телефона
+App -> App : code_verifier (случайная строка),\ncode_challenge = SHA-256(code_verifier)
+App -> IdP : POST /authorize-challenge\n(client_id, номер телефона,\ncode_challenge)
+IdP -> IdP : Лимиты: 3 кода на номер за 15 мин,\n10 запросов с устройства за час
+IdP -> SMS : Отправить одноразовый код
+SMS -->> Patient : SMS с кодом (действует 5 мин)
+IdP --> App : auth_session (идентификатор попытки входа)
+Patient -> App : Вводит код из SMS
+App -> IdP : POST /authorize-challenge\n(auth_session, код)
+IdP -> IdP : Проверка кода: не более 5 попыток,\nзатем попытка входа аннулируется
+IdP --> App : Код авторизации
+App -> IdP : POST /token\n(код авторизации, code_verifier)
+IdP -> IdP : Проверка SHA-256(code_verifier) = code_challenge
+IdP --> App : Токен доступа (JWT, 10 мин),\nтокен обновления (одноразовый, 30 дней)
+App -> App : Токен обновления — в Keychain /\nAndroid Keystore; токен доступа — в памяти
+
+== Вызов API ==
+App -> GW : GET /api/v1/appointments\nAuthorization: Bearer <токен доступа>
+GW -> GW : Проверка подписи по ключам JWKS,\niss, aud, exp, отзыва сессии
+GW -> API : Запрос + идентификатор пациента\nиз токена (mTLS)
+API -> API : Проверка, что данные\nпринадлежат пациенту
+API --> GW : Данные пациента
+GW --> App : 200 OK
+
+== Обновление токена ==
+App -> GW : Запрос с истёкшим токеном
+GW --> App : 401, WWW-Authenticate: Bearer error="invalid_token"
+App -> IdP : POST /token\n(grant_type=refresh_token)
+IdP -> IdP : Ротация: старый токен обновления\nаннулируется, выдаётся новый
+IdP --> App : Новые токен доступа и токен обновления
+note right of IdP
+  Повторное использование уже
+  аннулированного токена обновления —
+  признак кражи: Сервис аутентификации
+  отзывает всю сессию устройства.
+end note
+
+== Выход и отзыв ==
+Patient -> App : «Выйти» или утеря устройства\n(отзыв через поддержку)
+App -> IdP : POST /revoke (токен обновления)
+IdP -> GW : Сессия отозвана (список отзыва)
+App -> App : Удаление токенов с устройства
+@enduml
