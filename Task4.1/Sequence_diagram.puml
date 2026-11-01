@@ -1,0 +1,45 @@
+@startuml
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Context.puml
+
+LAYOUT_TOP_DOWN()
+
+title Снижение нагрузки на 1С: реплика полисов в Сервисе полисов ДМС (C4 Level 1)
+
+AddElementTag("new", $bgColor="#2E7D32", $borderColor="#1B5E20", $fontColor="#FFFFFF", $legendText="новая система")
+AddElementTag("legacy", $bgColor="#8D6E63", $borderColor="#5D4037", $fontColor="#FFFFFF", $legendText="legacy-система")
+AddRelTag("batch", $lineStyle=DottedLine(), $legendText="пакетный обмен по расписанию")
+AddRelTag("async", $lineStyle=DashedLine(), $textColor="#1565C0", $lineColor="#1565C0", $legendText="асинхронно")
+
+Person(patient, "Пациент", "Записывается на приём по полису ДМС")
+Person(admin, "Администратор клиники", "Прикрепляет полисы ДМС к пациентам и проверяет их в 1С")
+
+System(mobileApp, "Мобильное приложение", "Запись к врачу, полисы ДМС", $tags="new")
+System(apiGateway, "API Gateway и BFF", "Единая точка входа, ограничение частоты запросов", $tags="new")
+System(booking, "Сервис оформления записи", "Оркестратор саги: проверка полиса, резерв, оплата", $tags="new")
+
+System(policyService, "Сервис полисов ДМС", "Фасад над 1С: реплика полисов с инкрементальной синхронизацией, кэш результатов проверки, ограничение нагрузки и circuit breaker для вызовов 1С", $tags="new")
+
+System(policies1c, "1С: Полисы", "1С:Предприятие, HTTP-шлюз. Источник истины по полисам ДМС", $tags="legacy")
+System(monitoring, "Сервис мониторинга", "Метрики, трассировки, оповещения", $tags="new")
+
+Rel_D(patient, mobileApp, "Записывается, смотрит полисы")
+Rel_D(mobileApp, apiGateway, "Запросы пациента", "REST / HTTPS")
+Rel_D(apiGateway, booking, "Оформление записи", "gRPC, mTLS")
+Rel_D(apiGateway, policyService, "Полисы пациента (чтение)", "gRPC, mTLS")
+Rel_D(booking, policyService, "Проверка полиса", "gRPC, mTLS")
+
+Rel_D(policyService, policies1c, "Изменения полисов с отметки времени (раз в 5 мин)", "HTTP-шлюз 1С, пакетно", $tags="batch")
+Rel_D(policyService, policies1c, "Проверка полиса, которого нет в реплике (не более 30 запросов/с)", "HTTP-шлюз 1С")
+Rel_D(admin, policies1c, "Прикрепление и проверка полисов", "Клиент 1С")
+Rel_R(policyService, monitoring, "Отставание синхронизации, доля промахов, состояние circuit breaker", "OTLP", $tags="async")
+
+note right of policyService
+  Проверка полиса в пути записи
+  читает реплику, а не 1С.
+  Нагрузка на 1С не зависит
+  от числа пользователей
+  приложения.
+end note
+
+SHOW_LEGEND()
+@enduml
