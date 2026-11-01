@@ -28,7 +28,8 @@ System(apiGateway, "API Gateway", "Проверка токенов, ограни
 System(bff, "BFF мобильного приложения", "Агрегация данных под экраны, тайм-ауты, повторы, предохранители, кэш справочных данных", $tags="new")
 
 ' ====================== Предметные системы ======================
-System(schedule, "Расписание", "Java, REST, PostgreSQL + реплика для чтения. Резерв слота с ограниченным временем жизни, Transactional Outbox")
+System(bookingService, "Сервис оформления записи", "Оркестратор саги «запись — анализы — оплата»: ключи идемпотентности, состояние саги, таймер оплаты, компенсации", $tags="new")
+System(schedule, "Расписание", "Java, REST, PostgreSQL + реплика для чтения. Слоты врачей и кабинетов забора биоматериала, резерв с ограниченным временем жизни, Transactional Outbox")
 System(paymentService, "Платёжный сервис", "Платежи с ключом идемпотентности, статусы, сверка с провайдером, возвраты", $tags="new")
 System(policyService, "Сервис полисов ДМС", "Фасад над 1С (Anti-Corruption Layer): кэш полисов, ограничение нагрузки на 1С", $tags="new")
 System(resultsService, "Сервис результатов анализов", "Приём сигналов и инкрементальный опрос LIS, витрина результатов с дедупликацией и кэшем, Transactional Outbox, публикация событий, консоль доставки", $tags="new")
@@ -58,9 +59,14 @@ Rel_D(webPortal, apiGateway, "Запросы веб-портала", "REST / HTT
 Rel_U(apiGateway, idp, "Ключи проверки токенов", "HTTPS, mTLS")
 Rel_D(apiGateway, bff, "Маршрутизация", "REST / HTTPS, mTLS")
 
-Rel_D(bff, schedule, "Свободные слоты, резерв записи", "REST / HTTPS, mTLS")
-Rel_D(bff, paymentService, "Создание платежа", "gRPC, mTLS", $tags="grpc")
-Rel_D(bff, policyService, "Проверка полиса", "gRPC, mTLS", $tags="grpc")
+Rel_D(bff, bookingService, "Оформление записи, статус записи", "gRPC, mTLS", $tags="grpc")
+Rel_D(bff, schedule, "Свободные слоты приёма и забора биоматериала (чтение)", "REST / HTTPS, mTLS")
+Rel_D(bff, paymentService, "Статус и история платежей", "gRPC, mTLS", $tags="grpc")
+Rel_D(bff, policyService, "Полисы пациента", "gRPC, mTLS", $tags="grpc")
+
+Rel_D(bookingService, policyService, "Проверка полиса и покрытия услуг", "gRPC, mTLS", $tags="grpc")
+Rel_D(bookingService, schedule, "Резерв, подтверждение и отмена слота приёма и времени забора", "REST / HTTPS, mTLS")
+Rel_D(bookingService, paymentService, "Создание платежа, возврат", "gRPC, mTLS", $tags="grpc")
 Rel_D(bff, resultsService, "Результаты анализов", "gRPC, mTLS", $tags="grpc")
 Rel_D(bff, crm, "Профиль пациента", "REST / HTTPS, mTLS")
 
@@ -78,11 +84,12 @@ Rel_U(labTech, resultsService, "Статус доставки, повторна�
 
 ' ====================== Асинхронные взаимодействия ======================
 Rel_D(paymentService, eventBroker, "Платёж проведён / отклонён / возврат", "Kafka, TLS, Outbox", $tags="async")
-Rel_U(eventBroker, schedule, "Подтверждение или освобождение резерва (сага)", "Kafka, TLS", $tags="async")
-Rel_D(schedule, eventBroker, "Запись создана / подтверждена / перенесена / отменена", "Kafka, TLS, Outbox", $tags="async")
+Rel_U(eventBroker, bookingService, "Платёж проведён / отклонён (шаг саги)", "Kafka, TLS", $tags="async")
+Rel_D(bookingService, eventBroker, "Запись оформлена / отменена", "Kafka, TLS, Outbox", $tags="async")
+Rel_D(schedule, eventBroker, "Запись перенесена / отменена клиникой", "Kafka, TLS, Outbox", $tags="async")
 Rel_D(resultsService, eventBroker, "Результат анализа готов (после записи в витрину)", "Kafka, TLS, Outbox", $tags="async")
 Rel_D(crm, eventBroker, "Запуск маркетинговой кампании", "Kafka, TLS", $tags="async")
-Rel_U(eventBroker, crm, "События записей и результатов", "Kafka, TLS", $tags="async")
+Rel_U(eventBroker, crm, "События записей и результатов анализов", "Kafka, TLS", $tags="async")
 Rel_D(eventBroker, notifications, "События для уведомлений", "Kafka, TLS", $tags="async")
 
 Rel_R(notifications, pushProviders, "Отправка по приоритету", "AMQP → HTTPS", $tags="async")
@@ -138,6 +145,7 @@ end note
 
 ' ====================== Расположение ======================
 Lay_R(idp, webPortal)
+Lay_D(bff, bookingService)
 Lay_R(patient, doctor)
 Lay_R(doctor, labTech)
 Lay_R(schedule, paymentService)
