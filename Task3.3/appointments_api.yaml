@@ -1,0 +1,363 @@
+openapi: 3.2.0
+info:
+  title: API мобильного приложения «Здоровье+»
+  version: 1.0.0
+  summary: Записи пациента к врачу
+  description: |
+    Фрагмент API мобильного приложения пациента: получение списка
+    собственных записей к врачу.
+
+    Пациент определяется по токену доступа. Идентификатор пациента
+    в запросе не передаётся, поэтому получить чужие записи нельзя.
+
+    Время возвращается в формате ISO 8601 со смещением часового пояса
+    клиники: клиники находятся в разных часовых поясах (Москва,
+    Санкт-Петербург, Екатеринбург, Новосибирск).
+
+    Ошибки возвращаются в формате Problem Details (RFC 9457).
+security:
+  - bearerAuth: []
+
+paths:
+  /api/v1/appointments:
+    get:
+      operationId: listAppointments
+      summary: Список записей пациента
+      description: |
+        Возвращает записи пациента, которому выдан токен доступа.
+        По умолчанию — предстоящие записи (`status=upcoming`),
+        отсортированные по времени приёма от ближайшей.
+      parameters:
+        - $ref: '#/components/parameters/Status'
+        - $ref: '#/components/parameters/DateFrom'
+        - $ref: '#/components/parameters/DateTo'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          summary: Список записей
+          description: Страница записей пациента
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppointmentPage'
+              examples:
+                upcoming:
+                  summary: Две предстоящие записи
+                  value:
+                    items:
+                      - id: 3f1c2a9e-6b7d-4e1a-9c2f-8a4d5e6f7a10
+                        status: confirmed
+                        startAt: '2026-11-05T10:30:00+03:00'
+                        endAt: '2026-11-05T11:00:00+03:00'
+                        doctor:
+                          id: 5b0e7c1a-2d3f-4e5a-8b9c-0d1e2f3a4b5c
+                          fullName: Иванова Мария Сергеевна
+                          specialty: Терапевт
+                        clinic:
+                          id: 8c2d4e6f-1a3b-4c5d-9e0f-a1b2c3d4e5f6
+                          name: «Здоровье+», Москва
+                          timeZone: Europe/Moscow
+                        service:
+                          name: Консультация терапевта
+                        labCollection:
+                          startAt: '2026-11-05T09:45:00+03:00'
+                        payment:
+                          status: paid
+                          amount:
+                            value: '2500.00'
+                            currency: RUB
+                      - id: 7a2b4c6d-8e9f-4a1b-b2c3-d4e5f6a7b8c9
+                        status: awaiting_payment
+                        startAt: '2026-11-12T16:00:00+05:00'
+                        endAt: '2026-11-12T16:30:00+05:00'
+                        doctor:
+                          id: 9d3e5f7a-4b6c-4d8e-a0f1-b2c3d4e5f6a7
+                          fullName: Петров Алексей Викторович
+                          specialty: Кардиолог
+                        clinic:
+                          id: 1e4f6a8b-5c7d-4e9f-b1a2-c3d4e5f6a7b8
+                          name: «Здоровье+», Екатеринбург
+                          timeZone: Asia/Yekaterinburg
+                        service:
+                          name: Консультация кардиолога
+                        labCollection: null
+                        payment:
+                          status: pending
+                          amount:
+                            value: '3200.00'
+                            currency: RUB
+                    pagination:
+                      limit: 20
+                      offset: 0
+                      total: 2
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Токен доступа пациента, выданный Сервисом аутентификации
+        (OpenID Connect). Передаётся в заголовке `Authorization: Bearer <token>`.
+
+  parameters:
+    Status:
+      name: status
+      in: query
+      required: false
+      description: |
+        Фильтр по статусу записи:
+        - `upcoming` — предстоящие: подтверждённые и ожидающие оплаты, время приёма в будущем;
+        - `past` — прошедшие приёмы;
+        - `cancelled` — отменённые;
+        - `all` — все записи.
+      schema:
+        type: string
+        enum: [upcoming, past, cancelled, all]
+        default: upcoming
+    DateFrom:
+      name: dateFrom
+      in: query
+      required: false
+      description: Начало периода по дате приёма (включительно).
+      schema:
+        type: string
+        format: date
+    DateTo:
+      name: dateTo
+      in: query
+      required: false
+      description: Конец периода по дате приёма (включительно).
+      schema:
+        type: string
+        format: date
+    Limit:
+      name: limit
+      in: query
+      required: false
+      description: Число записей на странице.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 50
+        default: 20
+    Offset:
+      name: offset
+      in: query
+      required: false
+      description: Число записей, которые нужно пропустить от начала выборки.
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+
+  headers:
+    NoStore:
+      description: Ответ содержит персональные медицинские данные и не кэшируется.
+      schema:
+        type: string
+        example: private, no-store
+    WwwAuthenticate:
+      description: Схема аутентификации и причина отказа (RFC 6750).
+      schema:
+        type: string
+        example: Bearer error="invalid_token"
+
+  responses:
+    Unauthorized:
+      summary: Требуется аутентификация
+      description: Токен доступа отсутствует, истёк или отозван. Клиент обновляет токен и повторяет запрос.
+      headers:
+        WWW-Authenticate:
+          $ref: '#/components/headers/WwwAuthenticate'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          examples:
+            tokenExpired:
+              summary: Срок действия токена истёк
+              value:
+                title: Требуется аутентификация
+                status: 401
+                detail: Срок действия токена доступа истёк.
+                instance: /api/v1/appointments
+    InternalError:
+      summary: Внутренняя ошибка
+      description: |
+        Непредвиденная ошибка на стороне сервера. Детали ошибки клиенту
+        не раскрываются; по traceId её находят в Сервисе мониторинга.
+        Запрос только читает данные, поэтому клиент может повторить его
+        с нарастающей задержкой.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          examples:
+            internal:
+              summary: Внутренняя ошибка сервера
+              value:
+                title: Внутренняя ошибка сервера
+                status: 500
+                detail: Не удалось получить список записей. Повторите запрос позже.
+                instance: /api/v1/appointments
+                traceId: 9f2b6c1d4e8a4b7c9d0e1f2a3b4c5d6e
+
+  schemas:
+    AppointmentPage:
+      type: object
+      required: [items, pagination]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Appointment'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+
+    Pagination:
+      type: object
+      required: [limit, offset, total]
+      properties:
+        limit:
+          type: integer
+          description: Размер страницы, применённый сервером.
+        offset:
+          type: integer
+          description: Смещение текущей страницы.
+        total:
+          type: integer
+          description: Общее число записей, подходящих под фильтр.
+
+    Appointment:
+      type: object
+      required: [id, status, startAt, endAt, doctor, clinic, service, payment]
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          description: |
+            - `awaiting_payment` — слот зарезервирован, ожидается оплата;
+            - `confirmed` — запись подтверждена;
+            - `cancelled` — запись отменена;
+            - `completed` — приём состоялся.
+          enum: [awaiting_payment, confirmed, cancelled, completed]
+        startAt:
+          type: string
+          format: date-time
+          description: Начало приёма со смещением часового пояса клиники.
+        endAt:
+          type: string
+          format: date-time
+          description: Окончание приёма со смещением часового пояса клиники.
+        doctor:
+          $ref: '#/components/schemas/Doctor'
+        clinic:
+          $ref: '#/components/schemas/Clinic'
+        service:
+          $ref: '#/components/schemas/Service'
+        labCollection:
+          description: Время забора биоматериала, если оно зарезервировано вместе с записью.
+          oneOf:
+            - $ref: '#/components/schemas/LabCollection'
+            - type: 'null'
+        payment:
+          $ref: '#/components/schemas/PaymentInfo'
+
+    Doctor:
+      type: object
+      required: [id, fullName, specialty]
+      properties:
+        id:
+          type: string
+          format: uuid
+        fullName:
+          type: string
+        specialty:
+          type: string
+
+    Clinic:
+      type: object
+      required: [id, name, timeZone]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        timeZone:
+          type: string
+          description: Часовой пояс клиники (IANA).
+
+    Service:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+
+    LabCollection:
+      type: object
+      required: [startAt]
+      properties:
+        startAt:
+          type: string
+          format: date-time
+
+    PaymentInfo:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          description: |
+            - `pending` — ожидается оплата;
+            - `paid` — оплачено;
+            - `refunded` — средства возвращены.
+          enum: [pending, paid, refunded]
+        amount:
+          $ref: '#/components/schemas/Money'
+
+    Money:
+      type: object
+      required: [value, currency]
+      properties:
+        value:
+          type: string
+          description: Сумма в виде строки, чтобы избежать ошибок округления.
+          pattern: '^\d+\.\d{2}$'
+        currency:
+          type: string
+          description: Код валюты ISO 4217.
+
+    Problem:
+      type: object
+      description: Описание ошибки по RFC 9457 (Problem Details).
+      required: [title, status]
+      properties:
+        type:
+          type: string
+          format: uri
+          default: about:blank
+        title:
+          type: string
+        status:
+          type: integer
+        detail:
+          type: string
+        instance:
+          type: string
+        traceId:
+          type: string
+          description: Идентификатор трассировки для поиска в Сервисе мониторинга.
