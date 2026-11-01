@@ -1,0 +1,86 @@
+@startuml
+!theme plain
+skinparam shadowing false
+skinparam defaultFontSize 12
+skinparam sequenceMessageAlign center
+skinparam responseMessageBelowArrow true
+skinparam NoteBackgroundColor #FFFDE7
+skinparam SequenceGroupBodyBackGroundColor transparent
+<style>
+sequenceDiagram {
+  participant {
+    Padding 6
+  }
+}
+</style>
+
+title Запись к врачу с оплатой и резервированием сдачи анализов: успешный сценарий (оркестрируемая сага)
+
+actor "Пациент" as Patient
+participant "Мобильное\nприложение" as App
+participant "API Gateway\nи BFF" as Edge
+box "Сервис оформления записи" #E8F5E9
+  participant "Оркестратор\nсаги" as Orch
+  database "Состояние саги\nи ключи\nидемпотентности" as SagaDB
+end box
+participant "Сервис\nполисов ДМС" as Policy
+participant "Расписание" as Schedule
+participant "Платёжный\nсервис" as Payment
+participant "Платёжный\nшлюз" as PSP #EEEEEE
+queue "Брокер\nсобытий" as Kafka
+participant "Уведомления" as Notif
+
+== Оформление записи ==
+Patient -> App : Выбирает врача, слот приёма\nи время сдачи анализов
+App -> App : Ключ идемпотентности\n(UUID попытки записи)
+App -> Edge : POST /bookings\nIdempotency-Key, токен доступа
+Edge -> Orch : Создать запись (gRPC, mTLS)
+Orch -> SagaDB : Регистрация ключа идемпотентности\nи создание саги (статус «начата»)
+SagaDB --> Orch : sagaId
+
+== Шаг 1. Проверка полиса ДМС ==
+Orch -> Policy : Проверить полис и покрытие услуг
+Policy --> Orch : Полис действителен,\nперечень покрытых услуг
+Orch -> SagaDB : Шаг 1 выполнен
+
+== Шаг 2. Резерв слота приёма ==
+Orch -> Schedule : Зарезервировать слот\n(ключ: sagaId, время жизни 15 мин)
+Schedule --> Orch : reservationId, статус «ожидает оплаты»
+Orch -> SagaDB : Шаг 2 выполнен
+
+== Шаг 3. Резерв времени забора биоматериала ==
+Orch -> Schedule : Зарезервировать время в кабинете забора\n(ключ: sagaId + lab, время жизни 15 мин)
+Schedule --> Orch : labReservationId, статус «ожидает оплаты»
+Orch -> SagaDB : Шаг 3 выполнен
+
+== Шаг 4. Оплата консультации ==
+Orch -> Payment : Создать платёж\n(ключ: sagaId, сумма к оплате пациентом)
+Payment -> PSP : Создать платёжную сессию\n(ключ идемпотентности провайдера)
+PSP --> Payment : paymentId, ссылка на оплату
+Payment --> Orch : paymentId, ссылка на оплату
+Orch -> SagaDB : Шаг 4 начат, ожидание оплаты
+Orch --> Edge : 202 Accepted: sagaId, ссылка на оплату
+Edge --> App : Ссылка на платёжную форму
+App -> PSP : Пациент вводит данные карты\nна странице провайдера
+PSP --> App : Оплата принята
+PSP -> Payment : Уведомление о статусе (webhook)
+Payment -> Payment : Статус «проведён»,\nсобытие в исходящую таблицу
+Payment -> Kafka : Событие «Платёж проведён» (sagaId)
+Kafka -> Orch : Событие «Платёж проведён»
+Orch -> SagaDB : Шаг 4 выполнен\n(точка невозврата)
+
+== Шаг 5. Подтверждение резервов ==
+Orch -> Schedule : Подтвердить запись на приём (reservationId)\nи время забора (labReservationId)
+Schedule --> Orch : Запись и время забора подтверждены
+Orch -> SagaDB : Сага завершена,\nрезультат сохранён по ключу идемпотентности
+Orch -> Kafka : Событие «Запись оформлена»
+
+== Шаг 6. Уведомление пациента ==
+Kafka -> Notif : Событие «Запись оформлена»
+Notif -->> App : Пуш: запись подтверждена,\nвремя приёма и сдачи анализов
+App -> Edge : GET /bookings/{sagaId}
+Edge -> Orch : Статус записи
+Orch --> Edge : Запись подтверждена
+Edge --> App : Детали записи
+App --> Patient : Экран подтверждения
+@enduml
